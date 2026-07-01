@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.Authentication;
+using Microsoft.AspNetCore.Authentication.Google;
 using Microsoft.AspNetCore.Identity;
 using Microsoft.EntityFrameworkCore;
 using TechJockeys.Data;
@@ -15,6 +17,19 @@ builder.Services.AddDefaultIdentity<IdentityUser>(options => options.SignIn.Requ
     .AddEntityFrameworkStores<ApplicationDbContext>();
 builder.Services.AddControllersWithViews();
 
+builder.Services.AddAuthentication()
+
+    .AddGoogle(
+
+        options => {
+
+            options.ClientId = builder.Configuration.GetSection("Authentication:Google")["ClientId"] ?? "";
+
+            options.ClientSecret = builder.Configuration.GetSection("Authentication:Google")["ClientSecret"] ?? "";
+
+        }
+
+    );
 var app = builder.Build();
 
 // Configure the HTTP request pipeline.
@@ -32,6 +47,7 @@ else
 app.UseHttpsRedirection();
 app.UseRouting();
 
+app.UseAuthentication();
 app.UseAuthorization();
 
 app.MapStaticAssets();
