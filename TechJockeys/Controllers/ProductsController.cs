@@ -100,7 +100,7 @@ namespace TechJockeys.Controllers
             }
 
                 // data valid => save to db
-                _context.Product.Update(product);
+            _context.Product.Update(product);
             _context.SaveChanges();
 
             // refresh index list
@@ -127,6 +127,20 @@ namespace TechJockeys.Controllers
             return RedirectToAction("Index");
         }
 
+        //GET: /Products/Details/5 => show details of selected product
+        // allow anonymous access
+        [AllowAnonymous]
+        public IActionResult Details(int id)
+        {
+            // find product by id
+            var product = _context.Product.Find(id);
+
+
+
+
+
+            return View(product);
+        }
         private static string UploadImage(IFormFile Image)
         {
             // get temp location of uploaded image

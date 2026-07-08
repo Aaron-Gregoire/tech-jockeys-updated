@@ -1,6 +1,7 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Http.HttpResults;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using TechJockeys.Data;
 using TechJockeys.Models;
 
@@ -84,30 +85,29 @@ namespace TechJockeys.Controllers
             return RedirectToAction("Index");
         }
 
-        // GET: /Categories/Delete/5 => delete selected category
-        public IActionResult Delete(int id)
-        {
-            // find Category to delete
-            var category = _context.Category.Find(id);
+        
+         // GET: /Categories/Delete/5 => delete selected category
+         public IActionResult Delete(int id)
+         {
+            // find Category to delete (include Products so we can check for children)
+            var category = _context.Category
+                .Include(c => c.Products)
+                .FirstOrDefault(c => c.CategoryId == id);
 
             if (category == null)
             {
-                // return RedirectToAction("Index");
                 return NotFound();
             }
-
-            // check for child products
-            if (category.Products == null)
+            // check for child products - block delete if any exist
+            if (category.Products != null && category.Products.Any())
             {
                 return View("Error");
             }
-
             // delete from db
             _context.Category.Remove(category);
             _context.SaveChanges();
-
             // refresh list
             return RedirectToAction("Index");
-        }
+         }
     }
 }
