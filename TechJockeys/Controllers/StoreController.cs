@@ -1,4 +1,6 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using Microsoft.AspNetCore.Authorization;
+using Microsoft.AspNetCore.Mvc;
+using Microsoft.EntityFrameworkCore;
 using TechJockeys.Data;
 using TechJockeys.Models;
 
@@ -24,7 +26,7 @@ namespace TechJockeys.Controllers
             return View(categories);
         }
 
-        //this method returns a page with the products belonging to that categoty
+        // This method returns a page with the products belonging to that category
         public IActionResult ByCategory(int id)
         {
 
@@ -34,39 +36,145 @@ namespace TechJockeys.Controllers
                 return RedirectToAction("Index");
             }
 
-            //retrieve list of products from the db
-            var products = _context.Product
-                                   .Where(p => p.CategoryId == id)
-                                   .OrderBy(p => p.Name)
-                                   .ToList();
+            // Retrieve list of products from the DB
+            var products = _context.Product                         // FROM PRODUCT p
+                                    .Where(p => p.CategoryId == id) // WHERE p.CategoryId = @id 
+                                    .OrderBy(p => p.Name)           // ORDER BY p.Name
+                                    .ToList();                      // SELECT *
 
-            //retreve category name to show on the page in the title
+            // Retrieve the category name to show on the page in the title
             var category = _context.Category.Find(id);
-            //redirect to index if catrgory not found
+            // redirect to index if category is null
             if (category == null)
             {
-                return RedirectToAction("Index");
+                return RedirectToAction("index");
             }
+
             // use id param to find category
             // use ViewData dictionary to show selected category name in heading
-            //since category is nullable use question mark will make this value empty on runtime if null
-            ViewData["Category"] = $"Showing all {category?.Name}";
-     
+            // since category is nullable, question mark '?' will make this value empty on runtime if null
+            ViewData["Category"] = category?.Name;
+
+
             return View(products);
         }
-         
-        //post method to add product to cart
-        [HttpPost]
-        public IActionResult AddToCart( [FromForm] int ProductId, [FromForm] int Quantity)
+
+         [HttpPost]
+            public IActionResult AddToCart([FromForm] int ProductId, [FromForm] int Quantity)
+            {
+                // get userId or generate temp id for not-logged in users
+                // retrieve from session storage storage
+                var customerId = GetCustomerId();
+
+                // Validate the product ID and quantity
+                if (Quantity <= 0 || ProductId <= 0)
+                {
+                    return BadRequest("Invalid quantity or product ID.");
+                }
+                // Validate that the product exists in the DB
+                var product = _context.Product.Find(ProductId);
+                if (product == null)
+                {
+                    return NotFound("Invalid product ID.");
+                }
+
+                // Get product price
+                var price = product.Price;
+
+                // Create new cart record
+                var cartItem = new CartItem
+                {
+                    Quantity = Quantity,
+                    Price = price,
+                    ProductId = ProductId,
+                    CustomerId = customerId
+                };
+
+                // Save new cart item to the database
+                _context.CartItem.Add(cartItem); // at this point, the cart item is only in memory not yet
+                _context.SaveChanges(); // this is when the new record is actually saved to the database
+
+                // Redirect to Cart view to show the user's cart
+                return RedirectToAction("Cart");
+            }
+        
+        [HttpGet]
+        public IActionResult Cart()
         {
-            //TODO: get userId or generate temp id for not logged in user
+            // get user id so we can filter car items
+            var customerId = GetCustomerId();
+            // get cart items associated to that user id
+            var cartItems = _context.CartItem                               // SELECT * FROM CartItem ci
+                                .Include(ci => ci.Product)                  // JOIN Product p ON ci.ProductId = p.ProductId
+                                .Where(ci => ci.CustomerId == customerId)   // WHERE ci.CustomerId = @customerId
+                                .OrderBy(ci => ci.CartItemId)               // ORDER BY ci.CartItemId
+                                .ToList();
 
-            //get product price
+            // calculate total price for all items in the cart and pass as viewbag to the view
+            ViewBag.TotalAmount = cartItems.Sum(ci => ci.Price * ci.Quantity);
 
-            //create new cart method 
+            // return the view with the cart items model (list)
+            return View(cartItems);
+        }
 
-            //redirect to cart view to show the users cart
+        [HttpGet]
+        public IActionResult RemoveFromCart(int id)
+        {
+            // Validate
+            if (id <= 0)
+            {
+                return BadRequest("Invalid cart item ID.");
+            }
+            // find the cart item in the DB
+            var cartItem = _context.CartItem.Find(id);
+
+            // remove it from collection and save changes
+            _context.CartItem.Remove(cartItem);
+            _context.SaveChanges();
+
+            // redirect back to cart view
             return RedirectToAction("Cart");
+        }
+
+        [HttpGet]
+        [Authorize] // only logged-in users can access checkout
+        public IActionResult Checkout()
+        {
+            return View();
+        }
+
+        // Helper Methods
+        /// <summary>
+        /// This method retrieves the customer ID from the session or generates a temporary ID 
+        /// for not-logged-in users
+        /// </summary>
+        /// <returns>
+        /// The customer ID as a string. It can be either a GUID or an email address.
+        /// </returns>
+        private string GetCustomerId()
+        {
+            return "123"; // Placeholder for customer ID retrieval logic
+            // retrieve customer ID from session storage
+            var customerId = HttpContext.Session.GetString("CustomerId");
+            // handle if it's null or empty (not logged in, first-time visitor)
+            if (string.IsNullOrEmpty(customerId))
+            {
+                // there's nothing in the session yet, so generate or get from user object and store
+                if (User.Identity.IsAuthenticated)
+                {
+                    // user is logged in, use their email as the customer ID
+                    customerId = User.Identity.Name; // this is usually the email address
+                }
+                else
+                {
+                    // user is not logged in, generate a temporary GUID for this session
+                    customerId = Guid.NewGuid().ToString();
+                }
+                // Store whichever value we got in the session for future requests
+                HttpContext.Session.SetString("CustomerId", customerId);
+            }
+
+            return customerId; // Placeholder for customer ID retrieval logic
         }
     }
 }
