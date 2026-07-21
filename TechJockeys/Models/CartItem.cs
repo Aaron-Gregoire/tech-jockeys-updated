@@ -1,5 +1,6 @@
 ﻿using Microsoft.Build.Tasks.Deployment.Bootstrapper;
 using System.ComponentModel.DataAnnotations;
+using System.ComponentModel;
 
 namespace TechJockeys.Models
 {
@@ -8,10 +9,12 @@ namespace TechJockeys.Models
         public int CartItemId { get; set; }
 
         [Required]
+        [DisplayName("Qty")]
         public int Quantity { get; set; }
 
         [Required]
         [DisplayFormat(DataFormatString = "{0:c}")]
+        [DisplayName("Price per unit")]
         public decimal Price { get; set; }
 
         [Required]

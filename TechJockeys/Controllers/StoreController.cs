@@ -1,7 +1,10 @@
 ﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
+using Stripe;
+using Stripe.Checkout;
 using TechJockeys.Data;
+using TechJockeys.Extensions;
 using TechJockeys.Models;
 
 namespace TechJockeys.Controllers
@@ -10,11 +13,13 @@ namespace TechJockeys.Controllers
     {
         // shared db conn
         private readonly ApplicationDbContext _context;
+        private readonly IConfiguration _configuration;
 
         // constructor w/db conn dependency
-        public StoreController(ApplicationDbContext context)
+        public StoreController(ApplicationDbContext context, IConfiguration configuration)
         {
             _context = context;
+            _configuration = configuration;
         }
 
         public IActionResult Index()
@@ -55,49 +60,48 @@ namespace TechJockeys.Controllers
             // since category is nullable, question mark '?' will make this value empty on runtime if null
             ViewData["Category"] = category?.Name;
 
-
             return View(products);
         }
 
-         [HttpPost]
-            public IActionResult AddToCart([FromForm] int ProductId, [FromForm] int Quantity)
+        [HttpPost]
+        public IActionResult AddToCart([FromForm] int ProductId, [FromForm] int Quantity)
+        {
+            // get userId or generate temp id for not-logged in users
+            // retrieve from session storage storage
+            var customerId = GetCustomerId();
+
+            // Validate the product ID and quantity
+            if (Quantity <= 0 || ProductId <= 0)
             {
-                // get userId or generate temp id for not-logged in users
-                // retrieve from session storage storage
-                var customerId = GetCustomerId();
-
-                // Validate the product ID and quantity
-                if (Quantity <= 0 || ProductId <= 0)
-                {
-                    return BadRequest("Invalid quantity or product ID.");
-                }
-                // Validate that the product exists in the DB
-                var product = _context.Product.Find(ProductId);
-                if (product == null)
-                {
-                    return NotFound("Invalid product ID.");
-                }
-
-                // Get product price
-                var price = product.Price;
-
-                // Create new cart record
-                var cartItem = new CartItem
-                {
-                    Quantity = Quantity,
-                    Price = price,
-                    ProductId = ProductId,
-                    CustomerId = customerId
-                };
-
-                // Save new cart item to the database
-                _context.CartItem.Add(cartItem); // at this point, the cart item is only in memory not yet
-                _context.SaveChanges(); // this is when the new record is actually saved to the database
-
-                // Redirect to Cart view to show the user's cart
-                return RedirectToAction("Cart");
+                return BadRequest("Invalid quantity or product ID.");
             }
-        
+            // Validate that the product exists in the DB
+            var product = _context.Product.Find(ProductId);
+            if (product == null)
+            {
+                return NotFound("Invalid product ID.");
+            }
+
+            // Get product price
+            var price = product.Price;
+
+            // Create new cart record
+            var cartItem = new CartItem
+            {
+                Quantity = Quantity,
+                Price = price,
+                ProductId = ProductId,
+                CustomerId = customerId
+            };
+
+            // Save new cart item to the database
+            _context.CartItem.Add(cartItem); // at this point, the cart item is only in memory not yet
+            _context.SaveChanges(); // this is when the new record is actually saved to the database
+
+            // Redirect to Cart view to show the user's cart
+            return RedirectToAction("Cart");
+        }
+
         [HttpGet]
         public IActionResult Cart()
         {
@@ -143,6 +147,111 @@ namespace TechJockeys.Controllers
             return View();
         }
 
+        [HttpPost]
+        [Authorize] // only logged-in users can access checkout
+        public IActionResult Checkout(
+            [Bind("FirstName,LastName,Address,City,Province,PostalCode,Phone")] Order order)
+        {
+            // Programmatically handle OrderDate, OrderTotal, and CustomerId
+            order.OrderDate = DateTime.UtcNow; // best practice use UTC and convert to local time
+            order.CustomerId = GetCustomerId();
+            order.OrderTotal = _context.CartItem
+                .Where(ci => ci.CustomerId == order.CustomerId)
+                .Sum(ci => ci.Price * ci.Quantity);
+
+            // Store order in session storage for later use in the confirmation page
+            HttpContext.Session.SetObject("Order", order);
+
+            // Send user to payment page
+            return RedirectToAction("Payment");
+        }
+
+        // GET /Store/Payment
+        [HttpGet]
+        [Authorize] // only logged-in users can access payment
+        public IActionResult Payment()
+        {
+            // retrieve order from session storage
+            var order = HttpContext.Session.GetObject<Order>("Order");
+            // pass the order to viewbag object
+            ViewBag.TotalAmount = order.OrderTotal;
+            // return the view
+            return View();
+        }
+
+        [HttpPost]
+        [Authorize]
+        public IActionResult ProcessPayment()
+        {
+            // retrieve order from session storage
+            var order = HttpContext.Session.GetObject<Order>("Order");
+            // Set secret key
+            StripeConfiguration.ApiKey = _configuration["Payments:Stripe:SecretKey"];
+            // process payment using Stripe
+            var domain = $"https://{Request.Host}";
+            var options = new SessionCreateOptions
+            {
+                LineItems = new List<SessionLineItemOptions>
+                {
+                  new SessionLineItemOptions
+                  {
+                    PriceData = new SessionLineItemPriceDataOptions
+                    {
+                      UnitAmountDecimal = order.OrderTotal * 100, // Stripe expects amount in cents
+                      Currency = "cad",
+                        ProductData = new SessionLineItemPriceDataProductDataOptions
+                        {
+                            Name = "TechJockeys Online Purchase",
+                        },
+                    },
+                    Quantity = 1,
+                  },
+                },
+                Mode = "payment",
+                PaymentMethodTypes = new List<string> { "card" },
+                SuccessUrl = domain + "/Store/SaveOrder",
+                CancelUrl = domain + "/Store/Cart"
+            };
+            var service = new SessionService();
+            Session session = service.Create(options);
+
+            Response.Headers.Add("Location", session.Url);
+            return new StatusCodeResult(303); // redirect to Stripe checkout
+        }
+
+        [HttpGet]
+        public IActionResult SaveOrder()
+        {
+            // get the order from session storage
+            var order = HttpContext.Session.GetObject<Order>("Order");
+            // get customer id
+            var customerId = GetCustomerId();
+            // get cart items
+            var cartItems = _context.CartItem
+                .Where(ci => ci.CustomerId == customerId)
+                .ToList();
+            // save order to database
+            _context.Order.Add(order);
+            _context.SaveChanges();
+
+            // for each item in the cart, create an order item record
+            foreach (var cartItem in cartItems)
+            {
+                var orderItem = new OrderItem
+                {
+                    OrderId = order.OrderId,
+                    ProductId = cartItem.ProductId,
+                    Quantity = cartItem.Quantity,
+                    Price = cartItem.Price
+                };
+                _context.OrderItem.Add(orderItem);
+                // clear cart one by one
+                _context.CartItem.Remove(cartItem);
+            }
+            _context.SaveChanges();
+            return RedirectToAction("Details", "Orders", new { @id = order.OrderId });
+        }
+
         // Helper Methods
         /// <summary>
         /// This method retrieves the customer ID from the session or generates a temporary ID 
@@ -153,7 +262,6 @@ namespace TechJockeys.Controllers
         /// </returns>
         private string GetCustomerId()
         {
-            return "123"; // Placeholder for customer ID retrieval logic
             // retrieve customer ID from session storage
             var customerId = HttpContext.Session.GetString("CustomerId");
             // handle if it's null or empty (not logged in, first-time visitor)
